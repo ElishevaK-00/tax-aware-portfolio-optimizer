@@ -3,36 +3,28 @@ import numpy as np
 import pandas as pd
 import scipy.optimize as sco
 import plotly.graph_objects as go
-from openai import OpenAI
-import json
-import time
+import plotly.express as px
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Institutional Tax-Aware Optimizer", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Quantitative Tax Terminal", page_icon="📈", layout="wide")
 
-# --- CUSTOM CSS FOR TERMINAL UI ---
+# --- CUSTOM CSS FOR DARK INSTITUTIONAL THEME ---
 st.markdown("""
     <style>
-    .stApp { background-color: #0b0f19; color: #a0aec0; }
-    h1, h2, h3 { color: #63b3ed; font-family: 'Inter', sans-serif; }
-    .stChatInputContainer { padding-bottom: 20px; }
-    .metric-box { background-color: #1a202c; padding: 15px; border-radius: 8px; border-left: 4px solid #63b3ed; margin-bottom: 15px;}
+    .stApp { background-color: #0b0f19; }
+    h1, h2, h3, h4 { color: #63b3ed; font-family: 'Inter', sans-serif; }
+    .metric-container { background-color: #1a202c; padding: 20px; border-radius: 10px; border-left: 4px solid #63b3ed; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .metric-label { color: #a0aec0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-value { color: #ffffff; font-size: 28px; font-weight: bold; }
+    .metric-sub { color: #fc8181; font-size: 14px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏛️ Institutional Tax-Aware Portfolio Terminal")
-st.markdown("Automated NLP parameter extraction & Efficient Frontier mapping.")
+st.title("📈 Institutional Tax-Aware Portfolio Terminal")
+st.markdown("Dynamic visualization of macro tax policy impacts on the Markowitz Efficient Frontier.")
 st.divider()
 
-# --- INITIALIZE SESSION STATE FOR CHAT ---
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "System Initialized. I am your Quantitative Tax Assistant. Please describe a hypothetical macro tax policy, and I will extract the asset-class implications and map the structural shift on the Efficient Frontier."}
-    ]
-if "current_tax_rates" not in st.session_state:
-    st.session_state.current_tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
-
-# --- EMPIRICALLY ANCHORED CMAs ---
+# --- EMPIRICALLY ANCHORED DATA ---
 assets = ['Global Equities', 'Fixed Income', 'Real Estate', 'Commodities']
 num_assets = len(assets)
 expected_returns = np.array([0.085, 0.040, 0.065, 0.045]) 
@@ -43,143 +35,127 @@ cov_matrix = np.array([
     [0.0015, -0.0004, 0.0036, 0.0225]
 ])
 
-# --- AI / MOCK PARSER ENGINE ---
-def extract_tax_constraints(prompt):
-    """
-    Attempts to use OpenAI API from Streamlit Secrets.
-    Falls back to a smart regex/mock engine if no key is provided, preventing crashes.
-    """
-    try:
-        # Attempt to pull key from Streamlit's secure backend
-        api_key = st.secrets["OPENAI_API_KEY"]
-        client = OpenAI(api_key=api_key)
-        system_prompt = '''You are a quantitative tax engine. Extract tax rates for Equities, Bonds, Real Estate, and Commodities from the text. Return ONLY JSON with keys: "equity_tax", "bond_tax", "real_estate_tax", "commodity_tax". Use float values (e.g., 0.39). Default standard rates if unmentioned: Eq:0.20, Bd:0.35, RE:0.25, Com:0.28.'''
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-            temperature=0
-        )
-        return json.loads(response.choices[0].message.content), "Live API"
-    except Exception:
-        # Fallback Logic (Demo Mode) if API key fails or isn't set
-        time.sleep(1) # Simulate thinking
-        rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
-        prompt_lower = prompt.lower()
-        if "40" in prompt_lower or "increase" in prompt_lower:
-            rates["equity_tax"] = 0.40
-            rates["real_estate_tax"] = 0.35
-        if "cut" in prompt_lower or "15" in prompt_lower:
-            rates["equity_tax"] = 0.15
-            rates["bond_tax"] = 0.20
-        return rates, "Local Simulation"
-
 # --- MPT MATH ENGINE ---
-def generate_efficient_frontier(returns, cov_mat, target_returns):
-    frontier_vols, frontier_weights = [], []
+@st.cache_data
+def generate_efficient_frontier(returns, cov_mat):
+    """Sweeps across target returns to map the frontier."""
+    target_returns = np.linspace(np.min(returns) + 0.005, np.max(returns) - 0.005, 40)
+    frontier_vols, frontier_weights, valid_returns = [], [], []
     bounds = tuple((0.10, 0.50) for _ in range(num_assets)) # Institutional limits
+    
     for target in target_returns:
         constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}, {'type': 'eq', 'fun': lambda x: np.dot(x, returns) - target}]
         res = sco.minimize(lambda x: np.dot(x.T, np.dot(cov_mat, x)), num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints)
         if res.success:
             frontier_vols.append(np.sqrt(res.fun))
             frontier_weights.append(res.x)
-        else:
-            frontier_vols.append(None)
-            frontier_weights.append(None)
-    return frontier_vols, frontier_weights
+            valid_returns.append(target)
+            
+    return np.array(frontier_vols), np.array(valid_returns), np.array(frontier_weights)
 
-# --- DASHBOARD LAYOUT ---
-col_chat, col_viz = st.columns([1.2, 2], gap="large")
+# --- SIDEBAR CONTROLS ---
+with st.sidebar:
+    st.header("⚙️ Terminal Controls")
+    
+    scenario = st.selectbox(
+        "Select Tax Research Scenario",
+        (
+            "Standard Statutory Regime", 
+            "Bloomberg Tax Alert: 40% Capital Gains Hike", 
+            "Tax Foundation: Bond Protection Act"
+        )
+    )
+    
+    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=14.0, value=10.0, step=0.5) / 100.0
+    
+    st.markdown("---")
+    st.markdown("**Methodology:** Enforces 10% min / 50% max position sizing to prevent corner solutions. Math powered by SciPy SLSQP algorithms.")
 
-with col_chat:
-    st.subheader("💬 Tax Policy Assistant")
-    
-    # Render chat history
-    chat_container = st.container(height=450)
-    with chat_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-    
-    # Chat Input
-    if prompt := st.chat_input("Enter a proposed tax regulation..."):
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-        
-        # Process AI response
-        with chat_container:
-            with st.chat_message("assistant"):
-                with st.spinner("Analyzing policy parameters..."):
-                    new_rates, mode = extract_tax_constraints(prompt)
-                    st.session_state.current_tax_rates = new_rates
-                    
-                    reply = f"**[{mode} Mode]** Analysis complete. Extracted parametric constraints:\n\n"
-                    reply += f"- **Equities:** {new_rates['equity_tax']*100}%\n"
-                    reply += f"- **Bonds:** {new_rates['bond_tax']*100}%\n"
-                    reply += f"- **Real Estate:** {new_rates['real_estate_tax']*100}%\n"
-                    reply += f"- **Commodities:** {new_rates['commodity_tax']*100}%\n\n"
-                    reply += "Updating institutional frontier models now."
-                    
-                    st.markdown(reply)
-                    st.session_state.messages.append({"role": "assistant", "content": reply})
-        st.rerun()
+# --- SCENARIO LOGIC ---
+tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
 
-with col_viz:
-    st.subheader("📈 Interactive Markowitz Frontier")
+if "Bloomberg" in scenario:
+    tax_rates["equity_tax"] = 0.40
+    tax_rates["real_estate_tax"] = 0.35
+elif "Foundation" in scenario:
+    tax_rates["bond_tax"] = 0.15
+    tax_rates["equity_tax"] = 0.20
+
+tax_vector = np.array([tax_rates['equity_tax'], tax_rates['bond_tax'], tax_rates['real_estate_tax'], tax_rates['commodity_tax']])
+post_tax_returns = expected_returns * (1 - tax_vector)
+
+# --- COMPUTE FRONTIERS ---
+vols_pre, rets_pre, weights_pre = generate_efficient_frontier(expected_returns, cov_matrix)
+vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_returns, cov_matrix)
+
+# Find the portfolio that matches the user's selected volatility
+idx_pre = (np.abs(vols_pre - target_vol)).argmin()
+idx_post = (np.abs(vols_post - target_vol)).argmin()
+
+# --- TOP METRICS ---
+m1, m2, m3 = st.columns(3)
+
+drag = (np.mean(rets_pre) - np.mean(rets_post)) * 100
+
+m1.markdown(f"<div class='metric-container'><div class='metric-label'>Active Scenario</div><div class='metric-value' style='font-size:18px; margin-top:10px;'>{scenario}</div></div>", unsafe_allow_html=True)
+m2.markdown(f"<div class='metric-container'><div class='metric-label'>Mean Frontier Compression</div><div class='metric-value' style='color:#fc8181;'>-{drag:.2f}%</div><div class='metric-sub'>Yield drag across curve</div></div>", unsafe_allow_html=True)
+m3.markdown(f"<div class='metric-container'><div class='metric-label'>Target Risk Level</div><div class='metric-value' style='color:#68d391;'>{target_vol*100:.1f}% Volatility</div><div class='metric-sub'>Tracking live allocation</div></div>", unsafe_allow_html=True)
+
+st.write("") # Spacer
+
+# --- CHARTS ---
+col1, col2 = st.columns([1.5, 1], gap="large")
+
+with col1:
+    st.subheader("Interactive Efficient Frontier")
     
-    # Calculate Data
-    tax_vector = np.array(list(st.session_state.current_tax_rates.values()))
-    post_tax_returns = expected_returns * (1 - tax_vector)
+    fig_line = go.Figure()
     
-    target_returns_pre = np.linspace(0.045, 0.065, 30)
-    target_returns_post = np.linspace(0.025, 0.048, 30)
-    
-    vols_pre, weights_pre = generate_efficient_frontier(expected_returns, cov_matrix, target_returns_pre)
-    vols_post, weights_post = generate_efficient_frontier(post_tax_returns, cov_matrix, target_returns_post)
-    
-    valid_pre = [(v, r, w) for v, r, w in zip(vols_pre, target_returns_pre, weights_pre) if v is not None]
-    valid_post = [(v, r, w) for v, r, w in zip(vols_post, target_returns_post, weights_post) if v is not None]
-    
-    # Plotly Graph
-    fig = go.Figure()
-    
-    # Pre-Tax Line
-    fig.add_trace(go.Scatter(
-        x=[x[0]*100 for x in valid_pre], y=[x[1]*100 for x in valid_pre],
-        mode='lines', name='Baseline Opportunity Set',
-        line=dict(color='#4a5568', width=3),
-        text=[f"Equities: {x[2][0]*100:.1f}%<br>Bonds: {x[2][1]*100:.1f}%<br>RE: {x[2][2]*100:.1f}%<br>Cmdty: {x[2][3]*100:.1f}%" for x in valid_pre],
-        hoverinfo='text+x+y'
+    # Pre-Tax
+    fig_line.add_trace(go.Scatter(
+        x=vols_pre*100, y=rets_pre*100, mode='lines', name='Baseline Opportunity Set',
+        line=dict(color='#4a5568', width=3)
+    ))
+    # Post-Tax
+    fig_line.add_trace(go.Scatter(
+        x=vols_post*100, y=rets_post*100, mode='lines', name='Tax-Compressed Frontier',
+        line=dict(color='#63b3ed', width=4)
     ))
     
-    # Post-Tax Line
-    fig.add_trace(go.Scatter(
-        x=[x[0]*100 for x in valid_post], y=[x[1]*100 for x in valid_post],
-        mode='lines+markers', name='Post-Tax Structural Frontier',
-        line=dict(color='#63b3ed', width=3),
-        marker=dict(size=6, color='#63b3ed'),
-        text=[f"Equities: {x[2][0]*100:.1f}%<br>Bonds: {x[2][1]*100:.1f}%<br>RE: {x[2][2]*100:.1f}%<br>Cmdty: {x[2][3]*100:.1f}%" for x in valid_post],
-        hoverinfo='text+x+y'
+    # Add Marker for Selected Volatility
+    fig_line.add_trace(go.Scatter(
+        x=[vols_pre[idx_pre]*100, vols_post[idx_post]*100], 
+        y=[rets_pre[idx_pre]*100, rets_post[idx_post]*100], 
+        mode='markers', name='Selected Risk Profile',
+        marker=dict(color='#f6e05e', size=12, symbol='diamond')
     ))
     
-    fig.update_layout(
-        xaxis_title="Portfolio Volatility (Risk %)", yaxis_title="Expected Portfolio Return (%)",
+    fig_line.update_layout(
+        xaxis_title="Portfolio Volatility / Risk (%)", yaxis_title="Expected Return (%)",
         template="plotly_dark", plot_bgcolor='#0b0f19', paper_bgcolor='#0b0f19',
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-        margin=dict(l=10, r=10, t=10, b=10), height=450
+        margin=dict(l=0, r=0, t=30, b=0), height=450
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_line, use_container_width=True)
+
+with col2:
+    st.subheader(f"Allocation at {target_vol*100:.1f}% Risk")
     
-    # Live KPI Tiles below the graph
-    st.markdown("### Structural Diagnostics")
-    m1, m2, m3 = st.columns(3)
+    df_bar = pd.DataFrame({
+        'Asset': assets,
+        'Pre-Tax Baseline': weights_pre[idx_pre] * 100,
+        'Post-Tax Optimized': weights_post[idx_post] * 100
+    }).melt(id_vars='Asset', var_name='Regime', value_name='Weight (%)')
     
-    implied_drag = (np.mean(target_returns_pre) - np.mean(target_returns_post)) * 100
+    fig_bar = px.bar(
+        df_bar, x='Weight (%)', y='Asset', color='Regime', barmode='group', orientation='h',
+        color_discrete_sequence=['#4a5568', '#63b3ed']
+    )
     
-    m1.markdown(f"""<div class='metric-box'><div style='color:#a0aec0; font-size:14px;'>Active Tax Regime</div><div style='font-size:24px; color:white; font-weight:bold;'>Custom Input</div></div>""", unsafe_allow_html=True)
-    m2.markdown(f"""<div class='metric-box'><div style='color:#a0aec0; font-size:14px;'>Mean Frontier Drag</div><div style='font-size:24px; color:#fc8181; font-weight:bold;'>-{implied_drag:.2f}%</div></div>""", unsafe_allow_html=True)
-    m3.markdown(f"""<div class='metric-box'><div style='color:#a0aec0; font-size:14px;'>Algorithm Status</div><div style='font-size:24px; color:#68d391; font-weight:bold;'>SLSQP Constrained</div></div>""", unsafe_allow_html=True)
+    fig_bar.update_layout(
+        template="plotly_dark", plot_bgcolor='#0b0f19', paper_bgcolor='#0b0f19',
+        xaxis_title="Capital Allocation (%)", yaxis_title="",
+        legend=dict(yanchor="bottom", y=-0.3, xanchor="center", x=0.5, orientation="h"),
+        margin=dict(l=0, r=0, t=30, b=0), height=450
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
