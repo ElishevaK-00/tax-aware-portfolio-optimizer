@@ -3,3 +3,5 @@ numpy
 pandas
 cvxpy
 plotly
+yfinance
+openai
