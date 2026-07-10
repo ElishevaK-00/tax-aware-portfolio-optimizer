@@ -36,37 +36,39 @@ cov_matrix = np.array([
     [0.0015, -0.0004, 0.0036, 0.0225]
 ])
 
-# --- CVXPY CONVEX MATH ENGINE (INDUSTRY STANDARD) ---
+# --- CVXPY CONVEX MATH ENGINE ---
 @st.cache_data
 def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     """Uses CVXPY to rigorously map the efficient frontier via quadratic programming."""
-    target_returns = np.linspace(np.min(returns) + 0.005, np.max(returns) - 0.005, 40)
+    w = cp.Variable(num_assets)
+    
+    # 1. Determine absolute MAX return mathematically possible under the strict bounds
+    prob_max = cp.Problem(cp.Maximize(returns @ w), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
+    prob_max.solve(solver=cp.ECOS)
+    if prob_max.status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
+        return np.array([]), np.array([]), np.array([])
+    max_ret = prob_max.value
+    
+    # 2. Determine MINIMUM variance return to anchor the bottom of the curve
+    prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_mat)), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
+    prob_minv.solve(solver=cp.ECOS)
+    min_ret = returns @ w.value
+    
+    # 3. Sweep only within this mathematically feasible range
+    target_returns = np.linspace(min_ret, max_ret - 0.0001, 40)
     frontier_vols, frontier_weights, valid_returns = [], [], []
     
-    # Define CVXPY Variables and Parameters
-    w = cp.Variable(num_assets)
     target = cp.Parameter()
-    
-    # Objective: Minimize Portfolio Variance
     variance = cp.quad_form(w, cov_mat)
     objective = cp.Minimize(variance)
-    
-    # Constraints: Fully invested, bounds, and target return
-    constraints = [
-        cp.sum(w) == 1,
-        w >= min_weight,
-        w <= max_weight,
-        returns @ w >= target
-    ]
-    
+    constraints = [cp.sum(w) == 1, w >= min_weight, w <= max_weight, returns @ w >= target]
     prob = cp.Problem(objective, constraints)
     
     for t in target_returns:
         target.value = t
         try:
-            # ECOS is a fast, robust solver for convex problems
             prob.solve(solver=cp.ECOS, warm_start=True) 
-            if prob.status == cp.OPTIMAL:
+            if prob.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
                 frontier_vols.append(np.sqrt(variance.value))
                 frontier_weights.append(w.value)
                 valid_returns.append(t)
@@ -118,7 +120,8 @@ with st.sidebar:
         
     st.markdown("---")
     
-    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=14.0, value=10.0, step=0.5) / 100.0
+    # Adjust target risk scale to fit the pre-computed boundaries safely
+    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=3.0, max_value=18.0, value=7.5, step=0.5) / 100.0
 
 
 # --- COMPUTE MATH ---
@@ -130,10 +133,11 @@ vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_return
 
 # Find the portfolio that best matches the user's selected volatility
 if len(vols_pre) > 0 and len(vols_post) > 0:
+    # If the user slides to a risk level outside the feasible bound, snap to the closest point
     idx_pre = (np.abs(vols_pre - target_vol)).argmin()
     idx_post = (np.abs(vols_post - target_vol)).argmin()
 else:
-    st.error("Algorithm failed to converge. Please adjust bounds or risk parameters.")
+    st.error("Algorithm failed to converge. The parameters provided result in an infeasible mathematical space.")
     st.stop()
 
 # --- TOP METRICS ---
@@ -184,7 +188,7 @@ with col1:
     st.plotly_chart(fig_line, use_container_width=True)
 
 with col2:
-    st.subheader(f"Allocation at {target_vol*100:.1f}% Risk")
+    st.subheader(f"Allocation at Selected Risk")
     
     df_bar = pd.DataFrame({
         'Asset': assets,
@@ -219,7 +223,7 @@ audit_text = f"""[SYSTEM INITIALIZATION] Target: Convex Optimization Engine (CVX
    -> Real Estate Target Limit  : {tax_rates['real_estate_tax']*100}%
    -> Commodities Target Limit  : {tax_rates['commodity_tax']*100}%
 [COMPUTATION] Recalibrating return vectors (R_post = R_pre * (1 - T_asset))...
-[CONSTRAINTS] Applying boundary conditions: Min {min_w*100}%, Max {max_w*100}%
-[EXECUTION] Quadratic Programming Solved. Frontier Mapping Complete."""
+[CONSTRAINTS] Calculating mathematically feasible bounds: Min {min_w*100}%, Max {max_w*100}%
+[EXECUTION] ECOS Quadratic Programming Solver Engaged. Frontier Mapping Complete."""
 
 st.markdown(f"<div class='audit-log'>{audit_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
