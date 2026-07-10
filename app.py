@@ -26,16 +26,36 @@ st.title("📈 Institutional Tax-Aware Portfolio Terminal")
 st.markdown("Powered by **CVXPY Convex Optimization** to map macro tax impacts on the Markowitz Frontier.")
 st.divider()
 
-# --- EMPIRICALLY ANCHORED DATA ---
-assets = ['Global Equities', 'Fixed Income', 'Real Estate', 'Commodities']
+# --- LIVE MARKET DATA ENGINE ---
+assets = ['Equities (SPY)', 'Fixed Income (AGG)', 'Real Estate (VNQ)', 'Commodities (GLD)']
 num_assets = len(assets)
-expected_returns = np.array([0.085, 0.040, 0.065, 0.045]) 
-cov_matrix = np.array([
-    [0.0324, 0.0012, 0.0180, 0.0015],
-    [0.0012, 0.0064, 0.0016, -0.0004],
-    [0.0180, 0.0016, 0.0289, 0.0036],
-    [0.0015, -0.0004, 0.0036, 0.0225]
-])
+
+@st.cache_data
+def load_live_market_data():
+    """Pulls 10 years of live market data to calculate real empirical covariance and expected returns."""
+    tickers = ["SPY", "AGG", "VNQ", "GLD"]
+    
+    # Download 10 years of historical daily adjusted closing prices
+    data = yf.download(tickers, start="2014-01-01", end="2024-01-01")['Adj Close']
+    
+    # Calculate daily logarithmic returns
+    daily_returns = np.log(data / data.shift(1)).dropna()
+    
+    # Annualize the returns and covariance matrix (252 trading days)
+    annual_returns = daily_returns.mean() * 252
+    annual_cov_matrix = daily_returns.cov() * 252
+    
+    # Ensure order matches our assets list: SPY, AGG, VNQ, GLD
+    ordered_returns = np.array([annual_returns['SPY'], annual_returns['AGG'], annual_returns['VNQ'], annual_returns['GLD']])
+    
+    # Reorder covariance matrix to match
+    ordered_cov = annual_cov_matrix.loc[['SPY', 'AGG', 'VNQ', 'GLD'], ['SPY', 'AGG', 'VNQ', 'GLD']].values
+    
+    return ordered_returns, ordered_cov
+
+# Load the live data into the variables the rest of your app uses
+with st.spinner("Downloading 10-year empirical market data..."):
+    expected_returns, cov_matrix = load_live_market_data()
 
 # --- CVXPY CONVEX MATH ENGINE ---
 @st.cache_data
