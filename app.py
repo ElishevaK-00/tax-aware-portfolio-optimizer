@@ -44,14 +44,18 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     
     # 1. Determine absolute MAX return mathematically possible under the strict bounds
     prob_max = cp.Problem(cp.Maximize(returns @ w), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
-    prob_max.solve(solver=cp.ECOS)
+    try:
+        prob_max.solve() # Let CVXPY auto-select the best solver (OSQP/CLARABEL)
+    except cp.error.SolverError:
+        prob_max.solve(solver=cp.SCS) # Ultimate fallback
+        
     if prob_max.status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
         return np.array([]), np.array([]), np.array([])
     max_ret = prob_max.value
     
     # 2. Determine MINIMUM variance return to anchor the bottom of the curve
     prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_mat)), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
-    prob_minv.solve(solver=cp.ECOS)
+    prob_minv.solve()
     min_ret = returns @ w.value
     
     # 3. Sweep only within this mathematically feasible range
@@ -67,7 +71,7 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     for t in target_returns:
         target.value = t
         try:
-            prob.solve(solver=cp.ECOS, warm_start=True) 
+            prob.solve(warm_start=True) 
             if prob.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
                 frontier_vols.append(np.sqrt(variance.value))
                 frontier_weights.append(w.value)
@@ -120,7 +124,7 @@ with st.sidebar:
         
     st.markdown("---")
     
-    # Adjust target risk scale to fit the pre-computed boundaries safely
+    # Adjust target risk scale
     target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=3.0, max_value=18.0, value=7.5, step=0.5) / 100.0
 
 
@@ -133,7 +137,6 @@ vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_return
 
 # Find the portfolio that best matches the user's selected volatility
 if len(vols_pre) > 0 and len(vols_post) > 0:
-    # If the user slides to a risk level outside the feasible bound, snap to the closest point
     idx_pre = (np.abs(vols_pre - target_vol)).argmin()
     idx_post = (np.abs(vols_post - target_vol)).argmin()
 else:
@@ -224,6 +227,6 @@ audit_text = f"""[SYSTEM INITIALIZATION] Target: Convex Optimization Engine (CVX
    -> Commodities Target Limit  : {tax_rates['commodity_tax']*100}%
 [COMPUTATION] Recalibrating return vectors (R_post = R_pre * (1 - T_asset))...
 [CONSTRAINTS] Calculating mathematically feasible bounds: Min {min_w*100}%, Max {max_w*100}%
-[EXECUTION] ECOS Quadratic Programming Solver Engaged. Frontier Mapping Complete."""
+[EXECUTION] Automated OSQP/CLARABEL Solver Engaged. Frontier Mapping Complete."""
 
 st.markdown(f"<div class='audit-log'>{audit_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
