@@ -21,19 +21,36 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("📈 Institutional Tax-Aware Portfolio Terminal")
-st.markdown("Dynamic visualization of macro tax policy impacts on the Markowitz Efficient Frontier.")
+st.markdown("Dynamic visualization of **Regime-Switching** macro policies and their impact on the Markowitz Efficient Frontier.")
 st.divider()
 
-# --- EMPIRICALLY ANCHORED DATA ---
+# --- EMPIRICALLY ANCHORED DATA (REGIME SWITCHING) ---
 assets = ['Global Equities', 'Fixed Income', 'Real Estate', 'Commodities']
 num_assets = len(assets)
-expected_returns = np.array([0.085, 0.040, 0.065, 0.045]) 
-cov_matrix = np.array([
+
+# Baseline Covariance
+base_cov = np.array([
     [0.0324, 0.0012, 0.0180, 0.0015],
     [0.0012, 0.0064, 0.0016, -0.0004],
     [0.0180, 0.0016, 0.0289, 0.0036],
     [0.0015, -0.0004, 0.0036, 0.0225]
 ])
+
+# Define Economic Regimes (Returns and Covariance Multipliers)
+regimes_data = {
+    "Expansion (Low Volatility)": {
+        "returns": np.array([0.095, 0.035, 0.075, 0.040]),
+        "cov": base_cov * 0.8 # Risk is compressed
+    },
+    "Recession (High Volatility)": {
+        "returns": np.array([0.040, 0.060, 0.030, 0.020]),
+        "cov": base_cov * 1.8 # Correlations and variance spike during crashes
+    },
+    "Stagflation (Inflationary)": {
+        "returns": np.array([0.050, 0.020, 0.080, 0.090]), # Commodities and RE outperform
+        "cov": base_cov * 1.2
+    }
+}
 
 # --- MPT MATH ENGINE ---
 @st.cache_data
@@ -56,6 +73,14 @@ def generate_efficient_frontier(returns, cov_mat, bounds):
 with st.sidebar:
     st.header("⚙️ Terminal Controls")
     
+    # NEW: Macro Regime Forecasting
+    st.markdown("### 🌍 Macroeconomic Regime")
+    active_regime = st.selectbox(
+        "Current Market State",
+        ("Expansion (Low Volatility)", "Recession (High Volatility)", "Stagflation (Inflationary)")
+    )
+    
+    st.markdown("### 📜 Tax Policy Scenarios")
     scenario = st.selectbox(
         "Select Tax Research Scenario",
         (
@@ -76,7 +101,7 @@ with st.sidebar:
         tax_rates["bond_tax"] = 0.15
         tax_rates["equity_tax"] = 0.20
     elif "Custom" in scenario:
-        st.markdown("### 🎚️ Custom Tax Adjustments")
+        st.markdown("#### 🎚️ Custom Tax Adjustments")
         tax_rates["equity_tax"] = st.slider("Equities Tax (%)", 0, 60, 20) / 100.0
         tax_rates["bond_tax"] = st.slider("Fixed Income Tax (%)", 0, 60, 35) / 100.0
         tax_rates["real_estate_tax"] = st.slider("Real Estate Tax (%)", 0, 60, 25) / 100.0
@@ -92,15 +117,17 @@ with st.sidebar:
     
     if "Institutional" in methodology:
         active_bounds = tuple((0.10, 0.50) for _ in range(num_assets))
-        st.caption("Enforces strict diversification to prevent brittle corner solutions.")
+        st.caption("Robust constraint: Prevents brittle corner solutions caused by estimation errors.")
     else:
         active_bounds = tuple((0.0, 1.0) for _ in range(num_assets))
-        st.caption("Allows the algorithm to dump 100% of capital into a single asset class if mathematically optimal.")
+        st.caption("Standard MVO: Highly sensitive to parameter uncertainty.")
         
     st.markdown("---")
-    
-    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=14.0, value=10.0, step=0.5) / 100.0
+    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=16.0, value=10.0, step=0.5) / 100.0
 
+# --- LOAD REGIME DATA ---
+expected_returns = regimes_data[active_regime]["returns"]
+cov_matrix = regimes_data[active_regime]["cov"]
 
 # --- COMPUTE MATH ---
 tax_vector = np.array([tax_rates['equity_tax'], tax_rates['bond_tax'], tax_rates['real_estate_tax'], tax_rates['commodity_tax']])
@@ -122,7 +149,7 @@ m1, m2, m3 = st.columns(3)
 
 drag = (np.mean(rets_pre) - np.mean(rets_post)) * 100
 
-m1.markdown(f"<div class='metric-container'><div class='metric-label'>Active Scenario</div><div class='metric-value' style='font-size:18px; margin-top:10px;'>{scenario}</div></div>", unsafe_allow_html=True)
+m1.markdown(f"<div class='metric-container'><div class='metric-label'>Economic Regime</div><div class='metric-value' style='font-size:22px; margin-top:10px;'>{active_regime.split(' ')[0]}</div><div class='metric-sub' style='color:#a0aec0;'>Covariance matrix adjusted</div></div>", unsafe_allow_html=True)
 m2.markdown(f"<div class='metric-container'><div class='metric-label'>Mean Frontier Compression</div><div class='metric-value' style='color:#fc8181;'>-{drag:.2f}%</div><div class='metric-sub'>Yield drag across curve</div></div>", unsafe_allow_html=True)
 m3.markdown(f"<div class='metric-container'><div class='metric-label'>Target Risk Level</div><div class='metric-value' style='color:#68d391;'>{target_vol*100:.1f}% Volatility</div><div class='metric-sub'>Tracking live allocation</div></div>", unsafe_allow_html=True)
 
@@ -132,13 +159,13 @@ st.write("") # Spacer
 col1, col2 = st.columns([1.5, 1], gap="large")
 
 with col1:
-    st.subheader("Interactive Efficient Frontier")
+    st.subheader(f"Frontier State: {active_regime}")
     
     fig_line = go.Figure()
     
     # Pre-Tax
     fig_line.add_trace(go.Scatter(
-        x=vols_pre*100, y=rets_pre*100, mode='lines', name='Baseline Opportunity Set',
+        x=vols_pre*100, y=rets_pre*100, mode='lines', name='Pre-Tax Opportunity Set',
         line=dict(color='#4a5568', width=3)
     ))
     # Post-Tax
@@ -177,7 +204,6 @@ with col2:
         color_discrete_sequence=['#4a5568', '#63b3ed']
     )
     
-    # UI BUG FIX: Moved legend to the top so it doesn't overlap the X-axis label
     fig_bar.update_layout(
         template="plotly_dark", plot_bgcolor='#0b0f19', paper_bgcolor='#0b0f19',
         xaxis_title="Capital Allocation (%)", yaxis_title="",
