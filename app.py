@@ -35,8 +35,14 @@ def load_live_market_data():
     """Pulls 10 years of live market data to calculate real empirical covariance and expected returns."""
     tickers = ["SPY", "AGG", "VNQ", "GLD"]
     
-    # Download 10 years of historical daily adjusted closing prices
-    data = yf.download(tickers, start="2014-01-01", end="2024-01-01")['Adj Close']
+    # Robust method to avoid yfinance MultiIndex errors
+    price_data = {}
+    for ticker in tickers:
+        # Pull historical data safely for each ticker individually
+        price_data[ticker] = yf.Ticker(ticker).history(start="2014-01-01", end="2024-01-01")['Close']
+        
+    # Combine into a single clean DataFrame
+    data = pd.DataFrame(price_data).dropna()
     
     # Calculate daily logarithmic returns
     daily_returns = np.log(data / data.shift(1)).dropna()
