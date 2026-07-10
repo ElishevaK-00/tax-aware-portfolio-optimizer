@@ -4,6 +4,7 @@ import pandas as pd
 import cvxpy as cp
 import plotly.graph_objects as go
 import plotly.express as px
+import yfinance as yf
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Quantitative Tax Terminal", page_icon="📈", layout="wide")
