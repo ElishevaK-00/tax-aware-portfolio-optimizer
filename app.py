@@ -37,11 +37,10 @@ cov_matrix = np.array([
 
 # --- MPT MATH ENGINE ---
 @st.cache_data
-def generate_efficient_frontier(returns, cov_mat):
+def generate_efficient_frontier(returns, cov_mat, bounds):
     """Sweeps across target returns to map the frontier."""
     target_returns = np.linspace(np.min(returns) + 0.005, np.max(returns) - 0.005, 40)
     frontier_vols, frontier_weights, valid_returns = [], [], []
-    bounds = tuple((0.10, 0.50) for _ in range(num_assets)) # Institutional limits
     
     for target in target_returns:
         constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}, {'type': 'eq', 'fun': lambda x: np.dot(x, returns) - target}]
@@ -62,35 +61,61 @@ with st.sidebar:
         (
             "Standard Statutory Regime", 
             "Bloomberg Tax Alert: 40% Capital Gains Hike", 
-            "Tax Foundation: Bond Protection Act"
+            "Tax Foundation: Bond Protection Act",
+            "Custom Interactive Regime"
         )
     )
     
-    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=14.0, value=10.0, step=0.5) / 100.0
+    # --- DYNAMIC CUSTOM SCENARIO SLIDERS ---
+    tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
     
+    if "Bloomberg" in scenario:
+        tax_rates["equity_tax"] = 0.40
+        tax_rates["real_estate_tax"] = 0.35
+    elif "Foundation" in scenario:
+        tax_rates["bond_tax"] = 0.15
+        tax_rates["equity_tax"] = 0.20
+    elif "Custom" in scenario:
+        st.markdown("### 🎚️ Custom Tax Adjustments")
+        tax_rates["equity_tax"] = st.slider("Equities Tax (%)", 0, 60, 20) / 100.0
+        tax_rates["bond_tax"] = st.slider("Fixed Income Tax (%)", 0, 60, 35) / 100.0
+        tax_rates["real_estate_tax"] = st.slider("Real Estate Tax (%)", 0, 60, 25) / 100.0
+        tax_rates["commodity_tax"] = st.slider("Commodities Tax (%)", 0, 60, 28) / 100.0
+
     st.markdown("---")
-    st.markdown("**Methodology:** Enforces 10% min / 50% max position sizing to prevent corner solutions. Math powered by SciPy SLSQP algorithms.")
+    
+    # --- METHODOLOGY SELECTOR ---
+    methodology = st.selectbox(
+        "Optimization Methodology",
+        ("Institutional Bounds (10% - 50%)", "Unconstrained Long-Only (0% - 100%)")
+    )
+    
+    if "Institutional" in methodology:
+        active_bounds = tuple((0.10, 0.50) for _ in range(num_assets))
+        st.caption("Enforces strict diversification to prevent brittle corner solutions.")
+    else:
+        active_bounds = tuple((0.0, 1.0) for _ in range(num_assets))
+        st.caption("Allows the algorithm to dump 100% of capital into a single asset class if mathematically optimal.")
+        
+    st.markdown("---")
+    
+    target_vol = st.slider("Target Portfolio Volatility (Risk %)", min_value=6.0, max_value=14.0, value=10.0, step=0.5) / 100.0
 
-# --- SCENARIO LOGIC ---
-tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
 
-if "Bloomberg" in scenario:
-    tax_rates["equity_tax"] = 0.40
-    tax_rates["real_estate_tax"] = 0.35
-elif "Foundation" in scenario:
-    tax_rates["bond_tax"] = 0.15
-    tax_rates["equity_tax"] = 0.20
-
+# --- COMPUTE MATH ---
 tax_vector = np.array([tax_rates['equity_tax'], tax_rates['bond_tax'], tax_rates['real_estate_tax'], tax_rates['commodity_tax']])
 post_tax_returns = expected_returns * (1 - tax_vector)
 
-# --- COMPUTE FRONTIERS ---
-vols_pre, rets_pre, weights_pre = generate_efficient_frontier(expected_returns, cov_matrix)
-vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_returns, cov_matrix)
+vols_pre, rets_pre, weights_pre = generate_efficient_frontier(expected_returns, cov_matrix, active_bounds)
+vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_returns, cov_matrix, active_bounds)
 
-# Find the portfolio that matches the user's selected volatility
-idx_pre = (np.abs(vols_pre - target_vol)).argmin()
-idx_post = (np.abs(vols_post - target_vol)).argmin()
+# Find the portfolio that best matches the user's selected volatility
+if len(vols_pre) > 0 and len(vols_post) > 0:
+    idx_pre = (np.abs(vols_pre - target_vol)).argmin()
+    idx_post = (np.abs(vols_post - target_vol)).argmin()
+else:
+    st.error("Algorithm failed to converge. Please adjust bounds or risk parameters.")
+    st.stop()
 
 # --- TOP METRICS ---
 m1, m2, m3 = st.columns(3)
@@ -152,10 +177,11 @@ with col2:
         color_discrete_sequence=['#4a5568', '#63b3ed']
     )
     
+    # UI BUG FIX: Moved legend to the top so it doesn't overlap the X-axis label
     fig_bar.update_layout(
         template="plotly_dark", plot_bgcolor='#0b0f19', paper_bgcolor='#0b0f19',
         xaxis_title="Capital Allocation (%)", yaxis_title="",
-        legend=dict(yanchor="bottom", y=-0.3, xanchor="center", x=0.5, orientation="h"),
-        margin=dict(l=0, r=0, t=30, b=0), height=450
+        legend=dict(yanchor="bottom", y=1.02, xanchor="right", x=1, orientation="h"),
+        margin=dict(l=0, r=0, t=0, b=30), height=450
     )
     st.plotly_chart(fig_bar, use_container_width=True)
