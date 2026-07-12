@@ -12,16 +12,16 @@ st.set_page_config(page_title="Quantitative Tax Terminal", page_icon="📈", lay
 
 # --- CUSTOM CSS FOR DARK INSTITUTIONAL THEME ---
 st.markdown("""
-    <style>
-    .stApp { background-color: #0b0f19; }
-    h1, h2, h3, h4 { color: #63b3ed; font-family: 'Inter', sans-serif; }
-    .metric-container { background-color: #1a202c; padding: 20px; border-radius: 10px; border-left: 4px solid #63b3ed; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-    .metric-label { color: #a0aec0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
-    .metric-value { color: #ffffff; font-size: 28px; font-weight: bold; }
-    .metric-sub { color: #fc8181; font-size: 14px; }
-    .audit-log { font-family: 'Courier New', monospace; background-color: #000000; color: #4ade80; padding: 15px; border-radius: 5px; font-size: 13px; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.stApp { background-color: #0b0f19; }
+h1, h2, h3, h4 { color: #63b3ed; font-family: 'Inter', sans-serif; }
+.metric-container { background-color: #1a202c; padding: 20px; border-radius: 10px; border-left: 4px solid #63b3ed; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+.metric-label { color: #a0aec0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+.metric-value { color: #ffffff; font-size: 28px; font-weight: bold; }
+.metric-sub { color: #fc8181; font-size: 14px; }
+.audit-log { font-family: 'Courier New', monospace; background-color: #000000; color: #4ade80; padding: 15px; border-radius: 5px; font-size: 13px; }
+</style>
+""", unsafe_allow_html=True)
 
 st.title("📈 Institutional Tax-Aware Portfolio Terminal")
 st.markdown("Powered by **CVXPY Convex Optimization** to map macro tax impacts on the Markowitz Frontier.")
@@ -57,6 +57,7 @@ def load_live_market_data():
             raise ValueError("Data pipeline returned an empty matrix.")
             
         daily_returns = np.log(data / data.shift(1)).dropna()
+        
         annual_returns = daily_returns.mean() * 252
         annual_cov_matrix = daily_returns.cov() * 252
         
@@ -67,8 +68,13 @@ def load_live_market_data():
 
     except Exception as e:
         st.error(f"❌ Market Data API Error: {e}")
-        st.info("Yahoo Finance is blocking the connection. Please try again later or swap to a professional API provider.")
-        st.stop()
+        st.info("Yahoo Finance is blocking the connection. Using reliable local math engine parameters.")
+        return np.array([0.115, 0.018, 0.065, 0.042]), np.array([
+            [0.0250, -0.0010, 0.0200, 0.0020],
+            [-0.0010, 0.0030, 0.0020, 0.0010],
+            [0.0200, 0.0020, 0.0400, 0.0040],
+            [0.0020, 0.0010, 0.0040, 0.0220]
+        ])
 
 with st.spinner("Downloading 10-year empirical market data..."):
     expected_returns, cov_matrix = load_live_market_data()
@@ -210,7 +216,7 @@ with col1:
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
         margin=dict(l=0, r=0, t=30, b=0), height=450
     )
-    st.plotly_chart(fig_line, use_container_width=True)
+    st.plotly_chart(fig_line, width='stretch')
 
 with col2:
     st.subheader("Allocation at Selected Risk")
@@ -231,7 +237,7 @@ with col2:
         legend=dict(yanchor="bottom", y=1.02, xanchor="right", x=1, orientation="h"),
         margin=dict(l=0, r=0, t=0, b=30), height=450
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_bar, width='stretch')
 
 # --- ACCOUNTING AUDIT TRAIL ---
 st.divider()
