@@ -12,16 +12,16 @@ st.set_page_config(page_title="Quantitative Tax Terminal", page_icon="📈", lay
 
 # --- CUSTOM CSS FOR DARK INSTITUTIONAL THEME ---
 st.markdown("""
-<style>
-.stApp { background-color: #0b0f19; }
-h1, h2, h3, h4 { color: #63b3ed; font-family: 'Inter', sans-serif; }
-.metric-container { background-color: #1a202c; padding: 20px; border-radius: 10px; border-left: 4px solid #63b3ed; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-.metric-label { color: #a0aec0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
-.metric-value { color: #ffffff; font-size: 28px; font-weight: bold; }
-.metric-sub { color: #fc8181; font-size: 14px; }
-.audit-log { font-family: 'Courier New', monospace; background-color: #000000; color: #4ade80; padding: 15px; border-radius: 5px; font-size: 13px; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    .stApp { background-color: #0b0f19; }
+    h1, h2, h3, h4 { color: #63b3ed; font-family: 'Inter', sans-serif; }
+    .metric-container { background-color: #1a202c; padding: 20px; border-radius: 10px; border-left: 4px solid #63b3ed; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .metric-label { color: #a0aec0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-value { color: #ffffff; font-size: 28px; font-weight: bold; }
+    .metric-sub { color: #fc8181; font-size: 14px; }
+    .audit-log { font-family: 'Courier New', monospace; background-color: #000000; color: #4ade80; padding: 15px; border-radius: 5px; font-size: 13px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 st.title("📈 Institutional Tax-Aware Portfolio Terminal")
 st.markdown("Powered by **CVXPY Convex Optimization** to map macro tax impacts on the Markowitz Frontier.")
@@ -31,13 +31,11 @@ st.divider()
 assets = ['Equities (SPY)', 'Fixed Income (AGG)', 'Real Estate (VNQ)', 'Commodities (GLD)']
 num_assets = len(assets)
 
-@st.cache_data(ttl=86400) # Cache for 24 hours to prevent Yahoo from banning the Streamlit IP
+@st.cache_data(ttl=86400)
 def load_live_market_data():
-    """Pulls live market data using browser spoofing to bypass bot-blockers."""
     tickers = ["SPY", "AGG", "VNQ", "GLD"]
     price_data = {}
     
-    # Spoof a standard web browser to bypass Yahoo's security walls
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -53,32 +51,25 @@ def load_live_market_data():
                 
             price_data[ticker] = hist['Close']
             
-        # Combine into a single clean DataFrame
         data = pd.DataFrame(price_data).dropna()
         
         if data.empty:
             raise ValueError("Data pipeline returned an empty matrix.")
             
-        # Calculate daily logarithmic returns
         daily_returns = np.log(data / data.shift(1)).dropna()
-        
-        # Annualize the returns and covariance matrix (252 trading days)
         annual_returns = daily_returns.mean() * 252
         annual_cov_matrix = daily_returns.cov() * 252
         
-        # Ensure strict ordering
         ordered_returns = np.array([annual_returns['SPY'], annual_returns['AGG'], annual_returns['VNQ'], annual_returns['GLD']])
         ordered_cov = annual_cov_matrix.loc[['SPY', 'AGG', 'VNQ', 'GLD'], ['SPY', 'AGG', 'VNQ', 'GLD']].values
         
         return ordered_returns, ordered_cov
 
     except Exception as e:
-        # Graceful failure that prevents the UI from crashing abruptly
         st.error(f"❌ Market Data API Error: {e}")
         st.info("Yahoo Finance is blocking the connection. Please try again later or swap to a professional API provider.")
         st.stop()
 
-# Load the data
 with st.spinner("Downloading 10-year empirical market data..."):
     expected_returns, cov_matrix = load_live_market_data()
 
@@ -87,7 +78,6 @@ with st.spinner("Downloading 10-year empirical market data..."):
 def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     w = cp.Variable(num_assets)
     
-    # 1. Determine absolute MAX return mathematically possible under the strict bounds
     prob_max = cp.Problem(cp.Maximize(returns @ w), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
     try:
         prob_max.solve() 
@@ -98,12 +88,10 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
         return np.array([]), np.array([]), np.array([])
     max_ret = prob_max.value
 
-    # 2. Determine MINIMUM variance return to anchor the bottom of the curve
     prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_mat)), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
     prob_minv.solve()
     min_ret = returns @ w.value
 
-    # 3. Sweep only within this mathematically feasible range
     target_returns = np.linspace(min_ret, max_ret - 0.0001, 40)
     frontier_vols, frontier_weights, valid_returns = [], [], []
 
@@ -140,7 +128,6 @@ with st.sidebar:
         )
     )
 
-    # --- DYNAMIC CUSTOM SCENARIO SLIDERS ---
     tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
 
     if "Bloomberg" in scenario:
@@ -177,7 +164,6 @@ post_tax_returns = expected_returns * (1 - tax_vector)
 vols_pre, rets_pre, weights_pre = generate_efficient_frontier(expected_returns, cov_matrix, min_w, max_w)
 vols_post, rets_post, weights_post = generate_efficient_frontier(post_tax_returns, cov_matrix, min_w, max_w)
 
-# Find the portfolio that best matches the user's selected volatility
 if len(vols_pre) > 0 and len(vols_post) > 0:
     idx_pre = (np.abs(vols_pre - target_vol)).argmin()
     idx_post = (np.abs(vols_post - target_vol)).argmin()
@@ -202,18 +188,15 @@ with col1:
     st.subheader("Interactive Efficient Frontier")
     fig_line = go.Figure()
 
-    # Pre-Tax
     fig_line.add_trace(go.Scatter(
         x=vols_pre*100, y=rets_pre*100, mode='lines', name='Baseline Opportunity Set',
         line=dict(color='#4a5568', width=3)
     ))
-    # Post-Tax
     fig_line.add_trace(go.Scatter(
         x=vols_post*100, y=rets_post*100, mode='lines', name='Tax-Compressed Frontier',
         line=dict(color='#63b3ed', width=4)
     ))
 
-    # Selected Risk Marker
     fig_line.add_trace(go.Scatter(
         x=[vols_pre[idx_pre]*100, vols_post[idx_post]*100], 
         y=[rets_pre[idx_pre]*100, rets_post[idx_post]*100], 
@@ -255,7 +238,6 @@ st.divider()
 st.subheader("🧾 NLP Data Pipeline Audit Log")
 st.markdown("Transparent ledger tracking the translation of natural language policy into hard mathematical CVXPY constraints.")
 
-# FIXED SYNTAX ERRORS HERE: Multiplied accurately so Python doesn't throw a KeyError
 audit_text = f"""[SYSTEM INITIALIZATION] Target: Convex Optimization Engine (CVXPY)
 [STATUS] Extracting unstructured parameters...
 [MATCH] Scenario Context: '{scenario}'
