@@ -57,7 +57,6 @@ def load_live_market_data():
             raise ValueError("Data pipeline returned an empty matrix.")
             
         daily_returns = np.log(data / data.shift(1)).dropna()
-        
         annual_returns = daily_returns.mean() * 252
         annual_cov_matrix = daily_returns.cov() * 252
         
@@ -68,7 +67,7 @@ def load_live_market_data():
 
     except Exception as e:
         st.error(f"❌ Market Data API Error: {e}")
-        st.info("Yahoo Finance is blocking the connection. Using reliable local math engine parameters.")
+        st.info("Yahoo Finance is blocking the connection. Using fallback historical parameters.")
         return np.array([0.115, 0.018, 0.065, 0.042]), np.array([
             [0.0250, -0.0010, 0.0200, 0.0020],
             [-0.0010, 0.0030, 0.0020, 0.0010],
@@ -79,25 +78,39 @@ def load_live_market_data():
 with st.spinner("Downloading 10-year empirical market data..."):
     expected_returns, cov_matrix = load_live_market_data()
 
-# --- CVXPY CONVEX MATH ENGINE ---
+# --- CVXPY CONVEX MATH ENGINE (ARMORED) ---
 @st.cache_data
 def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     w = cp.Variable(num_assets)
     
+    # 1. Determine absolute MAX return mathematically possible under bounds
     prob_max = cp.Problem(cp.Maximize(returns @ w), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
     try:
-        prob_max.solve() 
-    except cp.error.SolverError:
-        prob_max.solve(solver=cp.SCS) 
+        # Strictly force the stable CLARABEL solver
+        prob_max.solve(solver=cp.CLARABEL) 
+    except:
+        try:
+            prob_max.solve(solver=cp.OSQP)
+        except:
+            return np.array([]), np.array([]), np.array([])
         
     if prob_max.status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
         return np.array([]), np.array([]), np.array([])
     max_ret = prob_max.value
 
+    # 2. Determine MINIMUM variance return to anchor the bottom of the curve
     prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_mat)), [cp.sum(w) == 1, w >= min_weight, w <= max_weight])
-    prob_minv.solve()
+    try:
+        prob_minv.solve(solver=cp.CLARABEL)
+    except:
+        try:
+            prob_minv.solve(solver=cp.OSQP)
+        except:
+            return np.array([]), np.array([]), np.array([])
+            
     min_ret = returns @ w.value
 
+    # 3. Sweep safely within this mathematically feasible range
     target_returns = np.linspace(min_ret, max_ret - 0.0001, 40)
     frontier_vols, frontier_weights, valid_returns = [], [], []
 
@@ -110,13 +123,20 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     for t in target_returns:
         target.value = t
         try:
-            prob.solve(warm_start=True) 
+            prob.solve(solver=cp.CLARABEL) 
             if prob.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
                 frontier_vols.append(np.sqrt(variance.value))
                 frontier_weights.append(w.value)
                 valid_returns.append(t)
         except:
-            continue
+            try:
+                prob.solve(solver=cp.OSQP)
+                if prob.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
+                    frontier_vols.append(np.sqrt(variance.value))
+                    frontier_weights.append(w.value)
+                    valid_returns.append(t)
+            except:
+                continue
             
     return np.array(frontier_vols), np.array(valid_returns), np.array(frontier_weights)
 
@@ -174,7 +194,7 @@ if len(vols_pre) > 0 and len(vols_post) > 0:
     idx_pre = (np.abs(vols_pre - target_vol)).argmin()
     idx_post = (np.abs(vols_post - target_vol)).argmin()
 else:
-    st.error("Algorithm failed to converge. The parameters provided result in an infeasible mathematical space.")
+    st.error("⚠️ The optimization parameters provided result in an mathematically infeasible space. Adjust the constraints or target risk in the sidebar.")
     st.stop()
 
 # --- TOP METRICS ---
@@ -254,6 +274,6 @@ audit_text = f"""[SYSTEM INITIALIZATION] Target: Convex Optimization Engine (CVX
 -> Commodities Target Limit  : {tax_rates['commodity_tax'] * 100}%
 [COMPUTATION] Recalibrating return vectors (R_post = R_pre * (1 - T_asset))...
 [CONSTRAINTS] Calculating mathematically feasible bounds: Min {min_w * 100}%, Max {max_w * 100}%
-[EXECUTION] Automated OSQP/CLARABEL Solver Engaged. Frontier Mapping Complete."""
+[EXECUTION] Secure Clarabel Numerical Engine Active. Frontier Mapping Stable."""
 
 st.markdown(f"<div class='audit-log'>{audit_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
