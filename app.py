@@ -76,11 +76,8 @@ NUM_ASSETS = len(ASSETS)
 # =========================
 @st.cache_data(show_spinner=False)
 def load_live_market_data():
-    """
-    Download historical prices and compute annualized expected returns/covariance.
-    Raises an exception if live data cannot be loaded.
-    """
-    series_list = []
+    """Download historical prices and compute annualized expected returns and covariance."""
+    price_series = {}
 
     for ticker in TICKERS:
         hist = yf.Ticker(ticker).history(
@@ -93,9 +90,10 @@ def load_live_market_data():
         if hist.empty or "Close" not in hist.columns:
             raise RuntimeError(f"No data returned for {ticker}")
 
-        series_list.append(hist["Close"].rename(ticker))
+        price_series[ticker] = hist["Close"].rename(ticker)
 
-    data = pd.concat(series_list, axis=1).dropna()
+    data = pd.concat(price_series.values(), axis=1).dropna()
+    data.columns = TICKERS
 
     if data.shape[0] < 100:
         raise RuntimeError("Insufficient live market data after cleaning.")
@@ -112,11 +110,10 @@ def load_live_market_data():
 
 @st.cache_data(show_spinner=False)
 def load_fallback_market_data():
-    """
-    Deterministic fallback dataset so the app still runs if live data fails.
-    """
+    """Deterministic fallback dataset so the app still runs if live data fails."""
     ordered_returns = np.array([0.12, 0.05, 0.08, 0.06], dtype=float)
 
+    # Positive-semidefinite fallback covariance matrix
     A = np.array(
         [
             [0.18, 0.00, 0.00, 0.00],
@@ -146,9 +143,7 @@ st.caption(f"Data source: {data_source}")
 # OPTIMIZATION HELPERS
 # =========================
 def solve_with_fallback(prob):
-    """
-    Try multiple solvers so the app is less likely to fail on deployment.
-    """
+    """Try several solvers so deployment is resilient."""
     for solver in (cp.OSQP, cp.CLARABEL, cp.SCS):
         try:
             prob.solve(solver=solver, warm_start=True)
@@ -161,9 +156,7 @@ def solve_with_fallback(prob):
 
 @st.cache_data(show_spinner=False)
 def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
-    """
-    Uses CVXPY to map the efficient frontier via quadratic programming.
-    """
+    """Uses CVXPY to rigorously map the efficient frontier via quadratic programming."""
     returns = np.asarray(returns, dtype=float)
     cov_mat = np.asarray(cov_mat, dtype=float)
     cov_psd = cp.psd_wrap(cov_mat)
