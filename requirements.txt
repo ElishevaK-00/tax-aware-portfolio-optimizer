@@ -1,7 +1,12 @@
 streamlit
 numpy
 pandas
+scipy
 cvxpy
+osqp
+ecos
+scs
+clarabel
 plotly
 yfinance
 openai
