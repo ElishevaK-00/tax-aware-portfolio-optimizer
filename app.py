@@ -6,10 +6,18 @@ import plotly.graph_objects as go
 import plotly.express as px
 import yfinance as yf
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Quantitative Tax Terminal", page_icon="📈", layout="wide")
+# =========================
+# PAGE CONFIG
+# =========================
+st.set_page_config(
+    page_title="Quantitative Tax Terminal",
+    page_icon="📈",
+    layout="wide",
+)
 
-# --- CUSTOM CSS FOR DARK INSTITUTIONAL THEME ---
+# =========================
+# STYLING
+# =========================
 st.markdown(
     """
     <style>
@@ -45,6 +53,7 @@ st.markdown(
         border-radius: 5px;
         font-size: 13px;
         overflow-x: auto;
+        white-space: pre-wrap;
     }
     </style>
     """,
@@ -55,34 +64,69 @@ st.title("📈 Institutional Tax-Aware Portfolio Terminal")
 st.markdown("Powered by **CVXPY Convex Optimization** to map macro tax impacts on the Markowitz Frontier.")
 st.divider()
 
-# --- LIVE MARKET DATA ENGINE ---
-assets = ["Equities (SPY)", "Fixed Income (AGG)", "Real Estate (VNQ)", "Commodities (GLD)"]
-tickers = ["SPY", "AGG", "VNQ", "GLD"]
-num_assets = len(assets)
+# =========================
+# CONSTANTS
+# =========================
+ASSETS = ["Equities (SPY)", "Fixed Income (AGG)", "Real Estate (VNQ)", "Commodities (GLD)"]
+TICKERS = ["SPY", "AGG", "VNQ", "GLD"]
+NUM_ASSETS = len(ASSETS)
 
-
+# =========================
+# DATA LOADING
+# =========================
 @st.cache_data(show_spinner=False)
 def load_live_market_data():
-    """Download historical prices and compute annualized expected returns and covariance."""
-    price_series = {}
+    """
+    Download historical prices and compute annualized expected returns/covariance.
+    Raises an exception if live data cannot be loaded.
+    """
+    series_list = []
 
-    for ticker in tickers:
-        hist = yf.Ticker(ticker).history(start="2014-01-01", end="2024-01-01", auto_adjust=False)
+    for ticker in TICKERS:
+        hist = yf.Ticker(ticker).history(
+            start="2014-01-01",
+            end="2024-01-01",
+            auto_adjust=False,
+            actions=False,
+        )
 
         if hist.empty or "Close" not in hist.columns:
-            raise RuntimeError(f"No data returned for {ticker}.")
+            raise RuntimeError(f"No data returned for {ticker}")
 
-        price_series[ticker] = hist["Close"].rename(ticker)
+        series_list.append(hist["Close"].rename(ticker))
 
-    data = pd.concat(price_series.values(), axis=1).dropna()
-    data.columns = tickers
+    data = pd.concat(series_list, axis=1).dropna()
+
+    if data.shape[0] < 100:
+        raise RuntimeError("Insufficient live market data after cleaning.")
 
     daily_returns = np.log(data / data.shift(1)).dropna()
     annual_returns = daily_returns.mean() * 252
     annual_cov_matrix = daily_returns.cov() * 252
 
-    ordered_returns = np.array([annual_returns[t] for t in tickers], dtype=float)
-    ordered_cov = annual_cov_matrix.loc[tickers, tickers].values.astype(float)
+    ordered_returns = np.array([annual_returns[t] for t in TICKERS], dtype=float)
+    ordered_cov = annual_cov_matrix.loc[TICKERS, TICKERS].values.astype(float)
+
+    return ordered_returns, ordered_cov
+
+
+@st.cache_data(show_spinner=False)
+def load_fallback_market_data():
+    """
+    Deterministic fallback dataset so the app still runs if live data fails.
+    """
+    ordered_returns = np.array([0.12, 0.05, 0.08, 0.06], dtype=float)
+
+    A = np.array(
+        [
+            [0.18, 0.00, 0.00, 0.00],
+            [0.03, 0.10, 0.00, 0.00],
+            [0.05, 0.02, 0.14, 0.00],
+            [0.04, 0.01, 0.02, 0.16],
+        ],
+        dtype=float,
+    )
+    ordered_cov = A @ A.T
 
     return ordered_returns, ordered_cov
 
@@ -90,48 +134,53 @@ def load_live_market_data():
 with st.spinner("Downloading 10-year empirical market data..."):
     try:
         expected_returns, cov_matrix = load_live_market_data()
+        data_source = "Live Yahoo Finance data"
     except Exception as e:
-        st.error(f"Market data load failed: {e}")
-        st.stop()
+        st.warning(f"Live data unavailable, using fallback demo data. ({e})")
+        expected_returns, cov_matrix = load_fallback_market_data()
+        data_source = "Fallback demo data"
+
+st.caption(f"Data source: {data_source}")
+
+# =========================
+# OPTIMIZATION HELPERS
+# =========================
+def solve_with_fallback(prob):
+    """
+    Try multiple solvers so the app is less likely to fail on deployment.
+    """
+    for solver in (cp.OSQP, cp.CLARABEL, cp.SCS):
+        try:
+            prob.solve(solver=solver, warm_start=True)
+            if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+                return True
+        except Exception:
+            pass
+    return False
 
 
-# --- CVXPY CONVEX MATH ENGINE ---
 @st.cache_data(show_spinner=False)
 def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
-    """Map the efficient frontier via quadratic programming."""
+    """
+    Uses CVXPY to map the efficient frontier via quadratic programming.
+    """
     returns = np.asarray(returns, dtype=float)
     cov_mat = np.asarray(cov_mat, dtype=float)
+    cov_psd = cp.psd_wrap(cov_mat)
 
-    w = cp.Variable(num_assets)
-
+    w = cp.Variable(NUM_ASSETS)
     base_constraints = [cp.sum(w) == 1, w >= min_weight, w <= max_weight]
 
-    # 1) Maximum return under bounds
+    # Maximum return under bounds
     prob_max = cp.Problem(cp.Maximize(returns @ w), base_constraints)
-    try:
-        prob_max.solve(solver=cp.OSQP, warm_start=True)
-    except Exception:
-        try:
-            prob_max.solve(solver=cp.CLARABEL, warm_start=True)
-        except Exception:
-            prob_max.solve(solver=cp.SCS, warm_start=True)
-
-    if prob_max.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
+    if not solve_with_fallback(prob_max):
         return np.array([]), np.array([]), np.array([])
 
     max_ret = float(prob_max.value)
 
-    # 2) Minimum variance portfolio
-    prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_mat)), base_constraints)
-    try:
-        prob_minv.solve(solver=cp.OSQP, warm_start=True)
-    except Exception:
-        try:
-            prob_minv.solve(solver=cp.CLARABEL, warm_start=True)
-        except Exception:
-            prob_minv.solve(solver=cp.SCS, warm_start=True)
-
-    if prob_minv.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or w.value is None:
+    # Minimum variance portfolio
+    prob_minv = cp.Problem(cp.Minimize(cp.quad_form(w, cov_psd)), base_constraints)
+    if not solve_with_fallback(prob_minv) or w.value is None:
         return np.array([]), np.array([]), np.array([])
 
     min_ret = float(returns @ w.value)
@@ -139,14 +188,15 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
     if not np.isfinite(min_ret) or not np.isfinite(max_ret) or min_ret >= max_ret:
         return np.array([]), np.array([]), np.array([])
 
-    # 3) Sweep feasible target returns
     target_returns = np.linspace(min_ret, max_ret - 1e-6, 40)
+
     frontier_vols = []
     frontier_weights = []
     valid_returns = []
 
     target = cp.Parameter()
-    variance = cp.quad_form(w, cov_mat)
+    variance = cp.quad_form(w, cov_psd)
+
     prob = cp.Problem(
         cp.Minimize(variance),
         [cp.sum(w) == 1, w >= min_weight, w <= max_weight, returns @ w >= target],
@@ -154,23 +204,16 @@ def generate_efficient_frontier(returns, cov_mat, min_weight, max_weight):
 
     for t in target_returns:
         target.value = float(t)
-        try:
-            prob.solve(solver=cp.OSQP, warm_start=True)
-        except Exception:
-            try:
-                prob.solve(solver=cp.CLARABEL, warm_start=True)
-            except Exception:
-                prob.solve(solver=cp.SCS, warm_start=True)
-
-        if prob.status in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} and w.value is not None and prob.value is not None:
+        if solve_with_fallback(prob) and w.value is not None and prob.value is not None:
             frontier_vols.append(float(np.sqrt(max(prob.value, 0.0))))
             frontier_weights.append(np.asarray(w.value, dtype=float).copy())
             valid_returns.append(float(t))
 
     return np.array(frontier_vols), np.array(valid_returns), np.array(frontier_weights)
 
-
-# --- SIDEBAR CONTROLS ---
+# =========================
+# SIDEBAR CONTROLS
+# =========================
 with st.sidebar:
     st.header("⚙️ Terminal Controls")
 
@@ -184,7 +227,12 @@ with st.sidebar:
         ),
     )
 
-    tax_rates = {"equity_tax": 0.20, "bond_tax": 0.35, "real_estate_tax": 0.25, "commodity_tax": 0.28}
+    tax_rates = {
+        "equity_tax": 0.20,
+        "bond_tax": 0.35,
+        "real_estate_tax": 0.25,
+        "commodity_tax": 0.28,
+    }
 
     if "Bloomberg" in scenario:
         tax_rates["equity_tax"] = 0.40
@@ -210,6 +258,7 @@ with st.sidebar:
     st.caption("CVXPY strictly enforces these constraints mathematically.")
 
     st.markdown("---")
+
     target_vol = st.slider(
         "Target Portfolio Volatility (Risk %)",
         min_value=3.0,
@@ -218,8 +267,9 @@ with st.sidebar:
         step=0.5,
     ) / 100.0
 
-
-# --- COMPUTE MATH ---
+# =========================
+# CORE COMPUTATION
+# =========================
 tax_vector = np.array(
     [
         tax_rates["equity_tax"],
@@ -242,11 +292,13 @@ if len(vols_pre) == 0 or len(vols_post) == 0:
 idx_pre = int(np.abs(vols_pre - target_vol).argmin())
 idx_post = int(np.abs(vols_post - target_vol).argmin())
 
-# --- TOP METRICS ---
+# =========================
+# METRICS
+# =========================
 m1, m2, m3 = st.columns(3)
 
 drag = (np.mean(rets_pre) - np.mean(rets_post)) * 100
-turnover_penalty = np.sum(np.abs(weights_pre[idx_pre] - weights_post[idx_post])) * 0.005 * 100  # Simulated 50bps transaction cost
+turnover_penalty = np.sum(np.abs(weights_pre[idx_pre] - weights_post[idx_post])) * 0.005 * 100
 
 m1.markdown(
     f"<div class='metric-container'><div class='metric-label'>Active Scenario</div><div class='metric-value' style='font-size:18px; margin-top:10px;'>{scenario}</div></div>",
@@ -263,7 +315,9 @@ m3.markdown(
 
 st.write("")
 
-# --- CHARTS ---
+# =========================
+# CHARTS
+# =========================
 col1, col2 = st.columns([1.5, 1], gap="large")
 
 with col1:
@@ -280,6 +334,7 @@ with col1:
             line=dict(color="#4a5568", width=3),
         )
     )
+
     fig_line.add_trace(
         go.Scatter(
             x=vols_post * 100,
@@ -289,6 +344,7 @@ with col1:
             line=dict(color="#63b3ed", width=4),
         )
     )
+
     fig_line.add_trace(
         go.Scatter(
             x=[vols_pre[idx_pre] * 100, vols_post[idx_post] * 100],
@@ -309,6 +365,7 @@ with col1:
         margin=dict(l=0, r=0, t=30, b=0),
         height=450,
     )
+
     st.plotly_chart(fig_line, use_container_width=True)
 
 with col2:
@@ -316,7 +373,7 @@ with col2:
 
     df_bar = pd.DataFrame(
         {
-            "Asset": assets,
+            "Asset": ASSETS,
             "Pre-Tax Baseline": weights_pre[idx_pre] * 100,
             "Post-Tax Optimized": weights_post[idx_post] * 100,
         }
@@ -342,9 +399,12 @@ with col2:
         margin=dict(l=0, r=0, t=0, b=30),
         height=450,
     )
+
     st.plotly_chart(fig_bar, use_container_width=True)
 
-# --- ACCOUNTING AUDIT TRAIL ---
+# =========================
+# AUDIT LOG
+# =========================
 st.divider()
 st.subheader("🧾 NLP Data Pipeline Audit Log")
 st.markdown("Transparent ledger tracking the translation of natural language policy into hard mathematical CVXPY constraints.")
@@ -355,8 +415,8 @@ audit_text = f"""[SYSTEM INITIALIZATION] Target: Convex Optimization Engine (CVX
 [DATA] Vectorizing parsed tax regulations:
    -> Equities Target Limit     : {tax_rates['equity_tax']*100}%
    -> Fixed Income Target Limit : {tax_rates['bond_tax']*100}%
-   -> Real Estate Target Limit  : {tax_rates['real_estate_tax']*100}%
-   -> Commodities Target Limit  : {tax_rates['commodity_tax']*100}%
+   -> Real Estate Target Limit   : {tax_rates['real_estate_tax']*100}%
+   -> Commodities Target Limit   : {tax_rates['commodity_tax']*100}%
 [COMPUTATION] Recalibrating return vectors (R_post = R_pre * (1 - T_asset))...
 [CONSTRAINTS] Calculating mathematically feasible bounds: Min {min_w*100}%, Max {max_w*100}%
 [EXECUTION] Automated OSQP/CLARABEL Solver Engaged. Frontier Mapping Complete."""
