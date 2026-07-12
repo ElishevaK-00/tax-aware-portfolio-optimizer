@@ -39,7 +39,9 @@ def load_live_market_data():
     price_data = {}
     for ticker in tickers:
         # Pull historical data safely for each ticker individually
-        price_data[ticker] = yf.Ticker(ticker).history(start="2014-01-01", end="2024-01-01")['Close']
+        hist = yf.Ticker(ticker).history(start="2014-01-01", end="2024-01-01")
+if hist.empty or "Close" not in hist:
+    raise RuntimeError(f"No data returned for {ticker}")
         
     # Combine into a single clean DataFrame
     data = pd.DataFrame(price_data).dropna()
@@ -61,7 +63,11 @@ def load_live_market_data():
 
 # Load the live data into the variables the rest of your app uses
 with st.spinner("Downloading 10-year empirical market data..."):
-    expected_returns, cov_matrix = load_live_market_data()
+    try:
+        expected_returns, cov_matrix = load_live_market_data()
+    except Exception as e:
+        st.error(f"Market data load failed: {e}")
+        st.stop()
 
 # --- CVXPY CONVEX MATH ENGINE ---
 @st.cache_data
